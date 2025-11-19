@@ -1,11 +1,21 @@
 (function(){
   console.log("KKTIX core started");
 
+// ==UserScript==
+// @name         Kenny KKTIX v3.1（GUI + 排程搶票 + 自動配位 + 下一步 + 鈴聲 + 自動提示）
+// @namespace    https://tampermonkey.net/
+// @version      3.1
+// @description  GUI搶票、定時啟動、自動選票、自動重整、自動配位、自動下一步、自動填會員、鈴聲通知、自動消失提示
+// @match        https://kktix.com/events/*/registrations/new*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
 (function () {
     'use strict';
 
     let running = false;
-    const alarm = new Audio("https://actions.google.com/sounds/v1/alarms/medium_bell_ringing_near.ogg");
+    const alarm = new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
     const $ = id => document.getElementById(id);
 
     // ======== 自動消失提示 ========
@@ -62,150 +72,84 @@
 
     // ======== 選票 ========
     function selectTicket() {
-        // 找到加號 / 增加票數按鈕（原先 v3.1 用的是 .plus）
-        const plus = document.querySelectorAll(".plus, .js-add-ticket, button.add-ticket, .ticket-plus");
-        if (!plus || plus.length === 0) return false;
+        const plus = document.querySelectorAll(".plus");
+        if (!plus.length) return false;
 
-        const p1 = ($("p1")?.value || "").trim();
-        const p2 = ($("p2")?.value || "").trim();
-        const num = parseInt(($("num")?.value) || "1", 10);
-        const mode = ($("mode")?.value) || "random";
+        const p1 = $("p1").value.trim();
+        const p2 = $("p2").value.trim();
+        const num = parseInt($("num").value);
+        const mode = $("mode").value;
 
-        // helper: 從按鈕往上找包含票價文字的列
-        const rowText = (btn) => btn.closest('.display-table-row, .ticket-unit, .ticket-row, .row, li')?.innerText || btn.closest('tr')?.innerText || "";
-
-        // 1) 嘗試找主票價
-        if (p1) {
-            for (const btn of plus) {
-                if (rowText(btn).includes(p1)) {
-                    for (let i = 0; i < num; i++) {
-                        try { btn.click(); } catch (e) {}
-                    }
-                    toast("🎯 選到主票：" + p1);
-                    return true;
-                }
+        // 主票
+        for (const btn of plus) {
+            if (btn.closest('.display-table-row')?.innerText.includes(p1)) {
+                for (let i = 0; i < num; i++) btn.click();
+                return true;
             }
         }
 
-        // 2) 找備援票價
+        // 備援票
         if (p2) {
             for (const btn of plus) {
-                if (rowText(btn).includes(p2)) {
-                    for (let i = 0; i < num; i++) {
-                        try { btn.click(); } catch (e) {}
-                    }
-                    toast("🛡 選到備援票：" + p2);
+                if (btn.closest('.display-table-row')?.innerText.includes(p2)) {
+                    for (let i = 0; i < num; i++) btn.click();
                     return true;
                 }
             }
         }
 
-        // 3) 任意票（備援空白時）
+        // 任意票
         if (!p2) {
             const arr = Array.from(plus);
-            if (!arr.length) return false;
             let btn = arr[0];
             if (mode === "bottom") btn = arr[arr.length - 1];
             if (mode === "random") btn = arr[Math.floor(Math.random() * arr.length)];
-            for (let i = 0; i < num; i++) {
-                try { btn.click(); } catch (e) {}
-            }
-            toast("🔀 選到任意票 (mode:" + mode + ")");
+            for (let i = 0; i < num; i++) btn.click();
             return true;
         }
-
         return false;
     }
 
     // ======== 自動下一步 / 配位 ========
     function clickNextOrAutoSeat() {
-        // 勾選條款 checkbox（若有）
-        const chk = document.querySelector('input[type="checkbox"], input[type="checkbox"].js-accept, input[name*="agree"]');
-        if (chk && !chk.checked) {
-            try { chk.click(); } catch (e) {}
-        }
+        document.querySelector('input[type="checkbox"]')?.click();
 
-        // 填會員編號（若欄位存在）
-        const mem = ($("member")?.value || "").trim();
-        const memField = document.querySelector('input.member-code, input[ng-model*="member_codes"], input[placeholder*="會員"], input[name*="member"], input[id*="member"]');
+        const mem = $("member").value.trim();
+        const memField = document.querySelector('input.member-code, input[ng-model*="member_codes"], input[placeholder*="會員"]');
         if (mem && memField) {
             memField.focus();
             memField.value = mem;
             memField.dispatchEvent(new Event("input", { bubbles: true }));
-            toast("🔢 已填會員：" + mem);
         }
 
-        // 嘗試自動配位按鈕
-        const auto = [...document.querySelectorAll('button, a')].find(b => (b.innerText || "").includes("配位"));
-        if (auto) { try { auto.click(); } catch (e) {} ; return; }
+        const auto = [...document.querySelectorAll('button')].find(b => b.innerText.includes("配位"));
+        if (auto) return auto.click();
 
-        // 嘗試下一步按鈕
-        const next = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')].find(b => {
-            const text = (b.innerText || b.value || "").trim();
-            return text.includes("下一步") || text.includes("下一") || text.includes("下一頁") || text.includes("Proceed") || text.includes("Next");
-        });
-        if (next) { try { next.click(); } catch (e) {} ; return; }
-    }
-
-    // ======== 偵測彈窗 → 自動按確認 → 自動續跑 ========
-    function handlePopup() {
-        // 常見 modal / sweetalert / 自訂按鈕
-        const candidates = Array.from(document.querySelectorAll("button, a, .swal-button, .modal-footer button, .btn, .btn-primary, .dialog-button"));
-        const btn = candidates.find(b => {
-            const t = (b.innerText || b.value || "").trim();
-            if (!t) return false;
-            return /(確認|確定|OK|我知道了|知道了|關閉|關閉視窗|返回|取消|了解)/i.test(t);
-        });
-
-        if (btn) {
-            toast("⚠️ 偵測到提示視窗 → 自動按確認 (" + (btn.innerText || btn.value || "").trim() + ")");
-            try { btn.click(); } catch (e) {}
-            // 等一小段時間讓 DOM 更新，再回到主流程
-            setTimeout(() => { if (running) main(); }, 300);
-            return true;
-        }
-
-        // 有些彈窗不是 button (例如 native alert) — 監聽並嘗試關閉 overlay
-        const modal = document.querySelector('.modal, .swal-modal, .dialog, .notice, .kktix-modal');
-        if (modal && window.getComputedStyle(modal).display !== 'none') {
-            // 嘗試找 modal 裡的關閉 X
-            const closeX = modal.querySelector('.close, .modal-close, .swal-close, .dialog-close, .btn-close');
-            if (closeX) {
-                try { closeX.click(); } catch (e) {}
-                setTimeout(() => { if (running) main(); }, 300);
-                toast("⚠️ 偵測 modal → 自動關閉");
-                return true;
-            }
-        }
-
-        return false;
+        const next = [...document.querySelectorAll('button,input')].find(b => (b.innerText || b.value || "").includes("下一步"));
+        if (next) return next.click();
     }
 
     // ======== 主流程 ========
     function main() {
         if (!running) return;
 
-        // 先處理可能跳出的訊息
-        if (handlePopup()) return;
-
-        // 選票 / 下一步 / 或重新整理
         if (selectTicket()) {
-            try { alarm.play(); } catch (e) {}
+            alarm.play();
             setTimeout(clickNextOrAutoSeat, 200);
         } else {
-            setTimeout(() => { if (running) location.reload(); }, 1000);
+            setTimeout(() => running && location.reload(), 1000);
         }
     }
 
     // ======== 控制 ========
     $("start").onclick = () => {
-        const T = ($("startTime")?.value || "").trim();
+        const T = $("startTime").value.trim();
         if (!T) {
             running = true;
             toast("🚀 立即搶票啟動");
             main();
         } else {
-            toast("⏳ 設定排程啟動成功：" + T);
+            toast("⏳ 設定排程啟動成功");
             const timer = setInterval(() => {
                 if (!running && new Date().toTimeString().slice(0, 8) >= T) {
                     clearInterval(timer);
@@ -221,16 +165,9 @@
         running = false;
         toast("⏸ 暫停搶票");
     };
-
-    // ======== 额外：監聽 DOM 變化以便更快處理彈窗（可選） ========
-    const observer = new MutationObserver(() => {
-        if (!running) return;
-        // 若發現可能的 popup，就馬上處理
-        handlePopup();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-
 })();
+
+
 
 
 })();
