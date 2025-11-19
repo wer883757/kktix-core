@@ -1,16 +1,6 @@
 (function(){
   console.log("KKTIX core started");
 
-// ==UserScript==
-// @name         Kenny KKTIX v3.1（GUI + 排程搶票 + 自動配位 + 下一步 + 鈴聲 + 自動提示）
-// @namespace    https://tampermonkey.net/
-// @version      3.1
-// @description  GUI搶票、定時啟動、自動選票、自動重整、自動配位、自動下一步、自動填會員、鈴聲通知、自動消失提示
-// @match        https://kktix.com/events/*/registrations/new*
-// @run-at       document-idle
-// @grant        none
-// ==/UserScript==
-
 (function () {
     'use strict';
 
