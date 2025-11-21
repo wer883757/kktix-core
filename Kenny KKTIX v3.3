@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Kenny KKTIX v3.3（含最大重試 + GUI + 排程搶票 + 自動配位 + 下一步 + 鈴聲 + 自動提示 + 無票自動確認 + 自動回答問題）
+// @name         Kenny KKTIX v3.3（可拖曳 + 記憶設定 + 排程搶票 + 自動配位 + 下一步 + 鈴聲 + 自動提示 + 無票自動確認 + 搶到停止 + 自動答題）
 // @namespace    https://tampermonkey.net/
 // @version      3.3
-// @description  GUI搶票、定時啟動、自動選票、自動重整、自動配位、自動下一步、自動填會員、鈴聲通知、自動消失提示、自動處理無票訊息、自動回答問題、最大重試次數
+// @description  v3.3: 含自動答題功能（QA 清單）、可最小化、記憶設定、定時啟動、自動選票、自動重整、自動配位、自動下一步、自動填會員、自動消失提示、無票自動確認、搶到票後自動停止、鈴聲通知
 // @match        https://kktix.com/events/*/registrations/new*
 // @run-at       document-idle
 // @grant        none
@@ -11,13 +11,14 @@
 (function () {
     'use strict';
 
+    // ====== 基本變數 ======
     let running = false;
-    let retryCount = 0;
-
+    let autoStop = false;
     const alarm = new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
     const $ = id => document.getElementById(id);
+    const LS_PREFIX = "kenny_";
 
-    // ======== 自動消失提示 ========
+    // ====== 通用函式 ======
     function toast(msg) {
         const div = document.createElement("div");
         div.innerText = msg;
@@ -32,268 +33,412 @@
         setTimeout(() => div.remove(), 1300);
     }
 
-    // ======== 自動處理無票訊息 ========
+    // ====== 無票自動確認 ======
     function autoHandleSoldOut() {
-        const soldOutTexts = ["已無票", "沒有票", "售完", "售罄", "無票"];
+        const soldOutTexts = ["已無票", "沒有票", "售完"];
         const observer = new MutationObserver(mutations => {
             mutations.forEach(m => {
                 m.addedNodes.forEach(node => {
                     if (node.nodeType !== 1) return;
-                    const text = (node.innerText || "").trim();
-                    if (!text) return;
+                    const text = node.innerText || "";
                     if (soldOutTexts.some(t => text.includes(t))) {
-                        try {
-                            const btn = [...node.querySelectorAll("button, input[type=button], input[type=submit]")]
-                                .find(b => /確定|OK|確認|Close|關閉/.test((b.innerText || b.value || "").trim()));
-                            if (btn) {
-                                btn.click();
-                                toast("⚠ 無票訊息自動確認");
-                            } else {
-                                const modalBtn = [...document.querySelectorAll("button, input[type=button], input[type=submit]")]
-                                    .find(b => /確定|OK|確認|Close|關閉/.test((b.innerText || b.value || "").trim()));
-                                if (modalBtn) {
-                                    modalBtn.click();
-                                    toast("⚠ 無票訊息自動確認 (global)");
-                                }
-                            }
-                        } catch (e) {
-                            console.warn("autoHandleSoldOut error:", e);
-                        }
+                        const btn = [...node.querySelectorAll("button, input[type=button]")]
+                            .find(b => /確定|OK|確認/.test(b.innerText || b.value || ""));
+                        if (btn) try { btn.click(); } catch(e){}
+                        toast("⚠ 無票訊息自動確認");
                     }
                 });
             });
         });
         observer.observe(document.body, { childList: true, subtree: true });
     }
-
     autoHandleSoldOut();
 
-    // ======== GUI 建立 ========
+    // ====== 建 GUI ======
     const panel = document.createElement("div");
     panel.innerHTML = `
-        <div style="background:#111;color:#eee;padding:12px;position:fixed;top:20%;right:20px;z-index:9999;width:300px;
+        <div id="kenny-box" style="background:#111;color:#eee;padding:12px;position:fixed;top:20%;right:20px;z-index:9999;width:300px;
              font-size:14px;border-radius:10px;border:1px solid #666;">
-            <h3 style="margin-top:0;text-align:center;font-size:18px;">🎫 Kenny KKTIX</h3>
+            <h3 id="kenny-title" style="margin-top:0;text-align:center;font-size:18px;cursor:move;">🎫 Kenny KKTIX v3.3</h3>
 
-            <label>主票價</label>
-            <input id="p1" type="text" placeholder="例：TWD$2,200" style="width:100%;margin-bottom:6px">
+            <div id="kenny-content">
+                <label>主票價</label>
+                <input id="p1" type="text" placeholder="例：TWD$2,200" style="width:100%;margin-bottom:6px">
 
-            <label>備援票價（空=任意）</label>
-            <input id="p2" type="text" placeholder="例：TWD$1,800" style="width:100%;margin-bottom:6px">
+                <label>備援票價（空=任意）</label>
+                <input id="p2" type="text" placeholder="例：TWD$1,800" style="width:100%;margin-bottom:6px">
 
-            <label>張數</label>
-            <select id="num" style="width:100%;margin-bottom:6px">
-                <option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option>
-            </select>
+                <label>張數</label>
+                <select id="num" style="width:100%;margin-bottom:6px">
+                    <option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option>
+                </select>
 
-            <label>模式</label>
-            <select id="mode" style="width:100%;margin-bottom:6px">
-                <option value="top">由上而下</option>
-                <option value="bottom">由下而上</option>
-                <option value="random" selected>隨機</option>
-            </select>
+                <label>模式</label>
+                <select id="mode" style="width:100%;margin-bottom:6px">
+                    <option value="top">由上而下</option>
+                    <option value="bottom">由下而上</option>
+                    <option value="random" selected>隨機</option>
+                </select>
 
-            <label>會員編號（可留空）</label>
-            <input id="member" type="text" placeholder="例：BZ583022889" style="width:100%;margin-bottom:6px">
+                <label>會員編號（可留空）</label>
+                <input id="member" type="text" placeholder="例：BZ583022889" style="width:100%;margin-bottom:6px">
 
-            <label>問題答案（可留空，針對文字問題）</label>
-            <input id="answer" type="text" placeholder="例：..." style="width:100%;margin-bottom:6px">
+                <label>啟動時間 (空=立即)</label>
+                <input id="startTime" type="text" placeholder="HH:MM:SS" style="width:100%;margin-bottom:10px">
 
-            <label>最大重試次數</label>
-            <input id="maxRetry" type="number" placeholder="例：10" style="width:100%;margin-bottom:6px" min="1">
+                <div style="display:flex;gap:6px;margin-bottom:6px;">
+                    <button id="start" style="flex:1;padding:6px;background:#06f;color:white;font-size:15px;border-radius:5px;">▶ 啟動</button>
+                    <button id="pause" style="flex:1;padding:6px;background:#c00;color:white;font-size:15px;border-radius:5px;">⏸ 暫停</button>
+                </div>
 
-            <label>啟動時間 (空=立即, HH:MM:SS)</label>
-            <input id="startTime" type="text" placeholder="HH:MM:SS" style="width:100%;margin-bottom:10px">
+                <hr style="border-color:#333;margin:8px 0;">
 
-            <button id="start" style="width:100%;padding:6px;margin-bottom:6px;background:#06f;color:white;font-size:16px;border-radius:5px;">▶ 啟動</button>
-            <button id="pause" style="width:100%;padding:6px;background:#c00;color:white;font-size:16px;border-radius:5px;">⏸ 暫停</button>
+                <label style="display:flex;align-items:center;gap:6px;">
+                    <input id="autoAnswerToggle" type="checkbox" /> 自動答題
+                </label>
+                <textarea id="qaList" placeholder="一行一筆：問題 => 答案，例如：住址 => 台北市信義區" style="width:100%;height:80px;margin-top:6px;"></textarea>
+
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                    <button id="saveSettings" style="flex:1;padding:6px;background:#2a7;color:white;border-radius:5px;">💾 存設定</button>
+                    <button id="resetSettings" style="flex:1;padding:6px;background:#666;color:white;border-radius:5px;">🗑 清除</button>
+                </div>
+            </div>
+
+            <button id="minBtn" style="width:100%;margin-top:6px;padding:6px;background:#444;color:#fff;border-radius:5px;">🔽 最小化</button>
         </div>
     `;
     document.body.appendChild(panel);
 
-    // ======== 選票函式 ========
-    function getPlusButtons() {
-        let plus = Array.from(document.querySelectorAll(".plus"));
-        if (plus.length) return plus.filter(el => el.offsetParent !== null);
-        const candidates = Array.from(document.querySelectorAll("button, a, input[type=button]"))
-            .filter(b => (b.innerText || b.value || "").trim() === "+" || /增加|加入|加一/.test((b.innerText || b.value || b.getAttribute('aria-label') || "").trim()));
-        return candidates.filter(el => el.offsetParent !== null);
-    }
+    // ====== 取得元素快捷方式 ======
+    function $$(id) { return document.getElementById(id); } // 覆蓋上方簡單 getter
 
+    // ====== 載入/儲存設定 ======
+    const fields = ["p1","p2","num","mode","member","startTime","qaList","autoAnswerToggle"];
+    function loadSettings() {
+        fields.forEach(id => {
+            const key = LS_PREFIX + id;
+            if (localStorage.getItem(key) !== null) {
+                const el = $(id);
+                if (!el) return;
+                if (el.type === "checkbox") el.checked = localStorage.getItem(key) === "1";
+                else el.value = localStorage.getItem(key);
+            }
+        });
+    }
+    function saveSettings() {
+        fields.forEach(id => {
+            const el = $(id);
+            if (!el) return;
+            const key = LS_PREFIX + id;
+            if (el.type === "checkbox") localStorage.setItem(key, el.checked ? "1" : "0");
+            else localStorage.setItem(key, el.value.trim());
+        });
+        toast("💾 設定已儲存");
+    }
+    // 初始載入
+    loadSettings();
+
+    // save / reset 按鈕
+    $("saveSettings").addEventListener("click", saveSettings);
+    $("resetSettings").addEventListener("click", () => {
+        fields.forEach(id => localStorage.removeItem(LS_PREFIX + id));
+        // 如果想馬上清空 UI
+        fields.forEach(id => {
+            const el = $(id);
+            if (!el) return;
+            if (el.type === "checkbox") el.checked = false;
+            else el.value = "";
+        });
+        toast("🗑 設定已清除");
+    });
+
+    // ====== 最小化 / 展開 ======
+    $("minBtn").onclick = () => {
+        const box = $("kenny-content");
+        if (box.style.display === "none") {
+            box.style.display = "block";
+            $("minBtn").innerText = "🔽 最小化";
+        } else {
+            box.style.display = "none";
+            $("minBtn").innerText = "🔼 展開";
+        }
+    };
+
+    // ====== 可拖曳 GUI（記住位置） ======
+    (function draggable() {
+        const box = $("kenny-box");
+        let x = 0, y = 0, drag = false;
+        // 載入上次位置
+        const left = localStorage.getItem(LS_PREFIX + "pos_left");
+        const top = localStorage.getItem(LS_PREFIX + "pos_top");
+        if (left && top) {
+            box.style.left = left;
+            box.style.top = top;
+            box.style.right = "auto";
+        }
+        box.addEventListener("mousedown", e => {
+            // 只在標題或 box 被按下時拖曳（避免點擊 input）
+            if (e.target.tagName.toLowerCase() === "input" || e.target.tagName.toLowerCase() === "textarea" || e.target.tagName.toLowerCase() === "select" || e.target.tagName.toLowerCase() === "button") return;
+            drag = true;
+            x = e.clientX - box.offsetLeft;
+            y = e.clientY - box.offsetTop;
+            box.style.transition = "none";
+        });
+        document.addEventListener("mousemove", e => {
+            if (!drag) return;
+            box.style.left = `${e.clientX - x}px`;
+            box.style.top = `${e.clientY - y}px`;
+            box.style.right = "auto";
+        });
+        document.addEventListener("mouseup", () => {
+            if (drag) {
+                drag = false;
+                // 存位置
+                localStorage.setItem(LS_PREFIX + "pos_left", box.style.left);
+                localStorage.setItem(LS_PREFIX + "pos_top", box.style.top);
+            }
+        });
+    })();
+
+    // ====== 選票 ======
     function selectTicket() {
-        const plus = getPlusButtons();
+        const plus = document.querySelectorAll(".plus");
         if (!plus.length) return false;
 
-        const p1 = ($("p1").value || "").trim();
-        const p2 = ($("p2").value || "").trim();
+        const p1 = $("p1").value.trim();
+        const p2 = $("p2").value.trim();
         const num = parseInt($("num").value) || 1;
         const mode = $("mode").value;
 
-        if (p1) {
-            for (const btn of plus) {
-                const row = btn.closest('.display-table-row') || btn.closest('tr') || btn.closest('.ticket-row') || btn.closest('.row');
-                if (row && (row.innerText || "").includes(p1)) {
+        // 主票
+        for (const btn of plus) {
+            try {
+                if (p1 && btn.closest('.display-table-row')?.innerText.includes(p1)) {
                     for (let i = 0; i < num; i++) btn.click();
                     return true;
                 }
-            }
+            } catch(e){}
         }
 
+        // 備援票
         if (p2) {
             for (const btn of plus) {
-                const row = btn.closest('.display-table-row') || btn.closest('tr') || btn.closest('.ticket-row') || btn.closest('.row');
-                if (row && (row.innerText || "").includes(p2)) {
-                    for (let i = 0; i < num; i++) btn.click();
-                    return true;
-                }
+                try {
+                    if (btn.closest('.display-table-row')?.innerText.includes(p2)) {
+                        for (let i = 0; i < num; i++) btn.click();
+                        return true;
+                    }
+                } catch(e){}
             }
         }
 
-        let btn = plus[0];
-        if (mode === "bottom") btn = plus[plus.length - 1];
-        if (mode === "random") btn = plus[Math.floor(Math.random() * plus.length)];
-        for (let i = 0; i < num; i++) btn.click();
-        return true;
+        // 任意票
+        if (!p2) {
+            const arr = Array.from(plus);
+            let btn = arr[0];
+            if (mode === "bottom") btn = arr[arr.length - 1];
+            if (mode === "random") btn = arr[Math.floor(Math.random() * arr.length)];
+            for (let i = 0; i < num; i++) btn.click();
+            return true;
+        }
+        return false;
     }
 
-    // ======== 自動填問題與會員、勾選同意 ========
-    function autoFillQuestionAndMember() {
-        try {
-            const ANSWER = ($("answer") && $("answer").value) ? $("answer").value.trim() : "";
-            const qSelectors = [
-                'input[placeholder*="回答"]',
-                'input[placeholder*="請輸入"]',
-                'input[placeholder*="問題"]',
-                'input[ng-model*="custom"]',
-                'input[ng-model*="question"]',
-                'input[type="text"].custom-question',
-                'input[type="text"][name*="question"]'
-            ];
-            let qField = null;
-            for (const s of qSelectors) {
-                qField = document.querySelector(s);
-                if (qField) break;
-            }
-            if (!qField) {
-                const containers = Array.from(document.querySelectorAll(".custom-captcha, .custom-captcha-inner, .ticket-captcha, .captcha"));
-                for (const c of containers) {
-                    const cand = c.querySelector('input[type="text"]');
-                    if (cand) {
-                        qField = cand;
-                        break;
-                    }
-                }
-            }
-
-            if (qField && ANSWER) {
-                qField.focus();
-                qField.value = ANSWER;
-                qField.dispatchEvent(new Event("input",{bubbles:true}));
-                qField.dispatchEvent(new Event("change",{bubbles:true}));
-                toast("✍️ 已自動填入問題答案");
-            }
-
-            const mem = ($("member").value || "").trim();
-            if (mem) {
-                const memField = document.querySelector('input.member-code, input[ng-model*="member_codes"], input[placeholder*="會員"], input[name*="member"], input[id*="member"]');
-                if (memField) {
-                    memField.focus();
-                    memField.value = mem;
-                    memField.dispatchEvent(new Event("input",{bubbles:true}));
-                    toast("🧾 已填入會員編號");
-                }
-            }
-
-            const agree = document.querySelector('input[type="checkbox"]');
-            if (agree && !agree.checked) {
-                try { agree.click(); } catch(e) { agree.checked = true; agree.dispatchEvent(new Event("change",{bubbles:true})); }
-            }
-        } catch(e) { console.warn("autoFillQuestionAndMember error:", e); }
-    }
-
-    // ======== 自動下一步 / 配位 ========
+    // ====== 自動下一步 / 配位 ======
     function clickNextOrAutoSeat() {
         try {
-            autoFillQuestionAndMember();
-            const auto = [...document.querySelectorAll('button, a, input[type=button], input[type=submit]')]
-                .find(b => /配位|自動配位|自動分配|Auto seat|Auto assign|Auto/.test((b.innerText||b.value||b.getAttribute('aria-label')||"").trim()));
-            if(auto){ auto.click(); return; }
+            document.querySelector('input[type="checkbox"]')?.click();
+        } catch(e){}
+        const mem = $("member").value.trim();
+        const memField = document.querySelector('input.member-code, input[ng-model*="member_codes"], input[placeholder*="會員"]');
+        if (mem && memField) {
+            memField.focus();
+            memField.value = mem;
+            memField.dispatchEvent(new Event("input", { bubbles: true }));
+        }
 
-            const next = [...document.querySelectorAll('button, input[type=button], input[type=submit]')]
-                .find(b => /(下一步|Next|Proceed|前往)/.test((b.innerText||b.value||b.getAttribute('aria-label')||"").trim()));
-            if(next){ next.click(); return; }
-
-            const fallback = document.querySelector('.next, .btn-next, #nextStep');
-            if(fallback) fallback.click();
-        } catch(e) { console.warn("clickNextOrAutoSeat error:", e); }
+        const auto = [...document.querySelectorAll('button')].find(b => b.innerText.includes("配位"));
+        if (auto) try { auto.click(); return; } catch(e){}
+        const next = [...document.querySelectorAll('button,input')]
+            .find(b => (b.innerText || b.value || "").includes("下一步"));
+        if (next) try { next.click(); } catch(e){}
     }
 
-    // ======== 主流程（含最大重試） ========
-    function main() {
-        if(!running) return;
-
-        const maxRetryInput = parseInt(($("maxRetry") && $("maxRetry").value) || "10");
-        const maxRetry = isNaN(maxRetryInput) || maxRetryInput<1 ? 10 : maxRetryInput;
-
+    // ====== 偵測是否成功進入結帳（自動停止重整） ======
+    const stopPatterns = ["訂單資訊", "付款方式", "信用卡", "取票", "寄送資訊"];
+    setInterval(() => {
         try {
-            if(selectTicket()) {
-                try { alarm.play(); } catch(e){}
-                setTimeout(clickNextOrAutoSeat,200);
-                retryCount=0;
-            } else {
-                retryCount++;
-                if(retryCount>maxRetry){
-                    running=false;
-                    toast(`⚠ 已達最大重試次數 (${maxRetry})，停止重整`);
-                    console.warn("Reached max retry count, stopping script");
-                } else {
-                    setTimeout(()=>running && location.reload(),1000);
+            if (stopPatterns.some(t => document.body.innerText.includes(t))) {
+                running = false;
+                if (!autoStop) {
+                    autoStop = true;
+                    alarm.play();
+                    toast("🎉 搶到票！已停止重整");
                 }
             }
-        } catch(e){
-            console.error("main error:", e);
-            retryCount++;
-            if(retryCount>maxRetry){
-                running=false;
-                toast(`⚠ 發生錯誤且已達最大重試次數 (${maxRetry})，停止`);
-            } else {
-                setTimeout(()=>running && location.reload(),1000);
-            }
+        } catch(e){}
+    }, 500);
+
+    // ====== 主流程 ======
+    function main() {
+        if (!running) return;
+
+        // 嘗試自動答題（若開啟）
+        if ($("autoAnswerToggle").checked) {
+            try { autoAnswerFromList(); } catch(e){}
+        }
+
+        if (selectTicket()) {
+            alarm.play();
+            setTimeout(clickNextOrAutoSeat, 200);
+        } else {
+            setTimeout(() => running && location.reload(), 1000);
         }
     }
 
-    // ======== 控制按鈕 ========
-    $("start").onclick = ()=>{
-        const T = ($("startTime").value||"").trim();
-        retryCount=0;
-        if(!T){
-            running=true;
+    // ====== 控制按鈕 ======
+    $("start").onclick = () => {
+        alarm.play().catch(()=>{}); // 允許音效播放權限建立
+
+        saveSettings();
+        const T = $("startTime").value.trim();
+        if (!T) {
+            running = true;
             toast("🚀 立即搶票啟動");
             main();
         } else {
-            toast("⏳ 設定排程啟動成功");
-            const timer = setInterval(()=>{
-                if(!running && new Date().toTimeString().slice(0,8) >= T){
+            toast("⏳ 排程啟動已設定");
+            const timer = setInterval(() => {
+                if (!running && new Date().toTimeString().slice(0, 8) >= T) {
                     clearInterval(timer);
-                    running=true;
-                    retryCount=0;
+                    running = true;
                     toast("🔥 開始搶票！");
                     main();
                 }
-            },200);
+            }, 200);
         }
     };
-
-    $("pause").onclick = ()=>{
-        running=false;
+    $("pause").onclick = () => {
+        running = false;
         toast("⏸ 暫停搶票");
     };
 
-    // 頁面載入時嘗試填入
-    setTimeout(()=>{ try{ autoFillQuestionAndMember(); }catch(e){} },800);
+    // ====== 自動答題功能 ======
+    // QA 清單格式：每行一筆 "問題 => 答案"
+    function parseQAList() {
+        const raw = $("qaList").value || "";
+        const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const pairs = [];
+        lines.forEach(line => {
+            const sep = line.includes("=>") ? "=>" : line.includes("→") ? "→" : line.includes(":") ? ":" : null;
+            if (!sep) return;
+            const parts = line.split(sep);
+            if (parts.length < 2) return;
+            const q = parts[0].trim();
+            const a = parts.slice(1).join(sep).trim();
+            if (q) pairs.push({ q, a });
+        });
+        return pairs;
+    }
 
-    // DOM 監聽，自動觸發 main
-    const pageObserver = new MutationObserver(()=>{ if(running) setTimeout(()=>{ if(running) main(); },120); });
-    pageObserver.observe(document.body,{childList:true,subtree:true});
+    // 嘗試去找到問題對應的輸入並填入
+    function autoAnswerFromList() {
+        const pairs = parseQAList();
+        if (!pairs.length) return;
 
+        // 幫助函式：dispatch event
+        function setValue(el, val) {
+            if (!el) return;
+            try {
+                if (el.tagName.toLowerCase() === "select") {
+                    // 嘗試選擇包含文字的 option
+                    const opts = Array.from(el.options);
+                    const o = opts.find(o=> (o.text||"").includes(val) || (o.value||"").includes(val));
+                    if (o) el.value = o.value;
+                    else el.value = val;
+                } else if (el.type === "checkbox" || el.type === "radio") {
+                    el.checked = !!val;
+                } else {
+                    el.focus();
+                    el.value = val;
+                }
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+            } catch(e){}
+        }
+
+        // 搜尋策略：
+        // 1) 找到 label（innerText 含問題），若 label 有 for -> 用 for 指向 input
+        // 2) 找到包含問題文字的容器（.question, .field-label, p, td, th, div 樣式），然後找下方/旁邊的 input/textarea/select
+        // 3) 嘗試用 placeholder 或 aria-label 含問題
+        pairs.forEach(({q,a}) => {
+            // 1) label for
+            const labels = Array.from(document.querySelectorAll("label")).filter(lb => (lb.innerText||"").includes(q));
+            for (const lb of labels) {
+                try {
+                    const forId = lb.getAttribute("for");
+                    if (forId) {
+                        const target = document.getElementById(forId);
+                        if (target) { setValue(target, a); return; }
+                    }
+                    // 如果 label 包含 input 子元素
+                    const innerInput = lb.querySelector("input,textarea,select");
+                    if (innerInput) { setValue(innerInput, a); return; }
+                    // 否則嘗試找 label 的下一個 input
+                    const sibling = lb.nextElementSibling;
+                    if (sibling) {
+                        const found = sibling.querySelector("input,textarea,select") || (sibling.tagName && /input|textarea|select/i.test(sibling.tagName) ? sibling : null);
+                        if (found) { setValue(found, a); return; }
+                    }
+                } catch(e){}
+            }
+
+            // 2) 常見 question container
+            const containers = Array.from(document.querySelectorAll(".question, .field-label, .field, .form-group, .form-row, td, th, p, div"));
+            for (const c of containers) {
+                try {
+                    if ((c.innerText||"").includes(q)) {
+                        // 找 child input
+                        const found = c.querySelector("input,textarea,select") ||
+                            c.nextElementSibling?.querySelector?.("input,textarea,select") ||
+                            c.parentElement?.querySelector?.("input,textarea,select");
+                        if (found) { setValue(found, a); return; }
+                    }
+                } catch(e){}
+            }
+
+            // 3) placeholder / aria-label / title
+            const placeholderMatches = Array.from(document.querySelectorAll('input[placeholder], textarea[placeholder], input[aria-label], input[title], textarea[aria-label], textarea[title]'))
+                .filter(el => ((el.getAttribute("placeholder")||"") + (el.getAttribute("aria-label")||"") + (el.getAttribute("title")||"")).includes(q));
+            if (placeholderMatches.length) { setValue(placeholderMatches[0], a); return; }
+
+            // 4) 最後嘗試按名字匹配 input name 屬性包含 q 的（不常用）
+            const nameMatches = Array.from(document.querySelectorAll('input[name], textarea[name], select[name]')).filter(el => (el.getAttribute("name")||"").toLowerCase().includes(q.toLowerCase()));
+            if (nameMatches.length) { setValue(nameMatches[0], a); return; }
+        });
+    }
+
+    // ====== 當頁面動態出現題目時自動嘗試填答（用 observer） ======
+    const qaObserver = new MutationObserver(muts => {
+        if (!$("autoAnswerToggle").checked) return;
+        // 小頻率執行填答以免太頻繁
+        try { autoAnswerFromList(); } catch(e){}
+    });
+    qaObserver.observe(document.body, { childList: true, subtree: true });
+
+    // ====== 畫面載入後若開啟 auto answer 先執行一次 ======
+    if ($("autoAnswerToggle").checked) {
+        try { autoAnswerFromList(); } catch(e){}
+    }
+
+    // ====== 頁面變動時自動啟動 main（用短 interval） ======
+    setInterval(() => {
+        try {
+            if (running) main();
+        } catch(e){}
+    }, 800);
+
+    // ====== 最後提示 ======
+    console.log("Kenny KKTIX v3.3 已載入（含自動答題功能）。");
+    toast("Kenny v3.3 已就緒");
 })();
