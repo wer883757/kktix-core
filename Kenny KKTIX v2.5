@@ -1,0 +1,167 @@
+// ==UserScript==
+// @name         Kenny KKTIX v2.5（全自動搶票 + 三模式選價 + 鈴聲通知）
+// @namespace    https://tampermonkey.net/
+// @version      2.5
+// @description  自動選票、自動重整、自動配位、自動填資料、自動鈴聲提醒（搶票全自動）
+// @match        https://kktix.com/events/*/registrations/new*
+// @run-at       document-idle
+// @grant        none
+// @license      MIT
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ==== 使用者設定 ====
+    const ENABLE_TIMER = true;
+    const START_TIME = "22:26:10";            // 開始搶票時間
+    const REFRESH_INTERVAL = 1000;            // 沒票時重整（毫秒）
+    const ticket_price_primary = 'TWD$2,200'; // 主票價
+    const ticket_price_backup = '';           // 備援票價（空 = 任意價位）
+    const ticket_num = 2;                     // 張數
+    const MEMBER_CODE = 'BZ583022889';        // 會員編號
+    const CAPTCHA_MODE = 'manual';            // 'manual' / 'fixed'
+    const CAPTCHA_VALUE = '';
+    const ticket_select_mode = 'random';      // 'top' / 'bottom' / 'random'
+    const DEBUG = true;
+
+    // ==== LOG ====
+    const log = (...a) => DEBUG && console.log('[KKTIX]', ...a);
+
+    // ==== 鈴聲 ====
+    const alarm = new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
+
+
+    // ==== 自動填值工具 ====
+    function safeVal(el, value) {
+        if (!el) return false;
+        el.focus();
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.blur();
+        return true;
+    }
+
+    // ==== 選票 ====
+    function trySelectTickets() {
+        const plusButtons = document.querySelectorAll(".plus");
+        if (!plusButtons.length) return false;
+
+        // 主票價
+        for (const btn of plusButtons) {
+            const row = btn.closest('.display-table-row');
+            if (row?.innerText.includes(ticket_price_primary)) {
+                for (let i = 0; i < ticket_num; i++) btn.click();
+                log(`選到主票價：${ticket_price_primary}`);
+                return true;
+            }
+        }
+
+        // 備援票價
+        if (ticket_price_backup) {
+            for (const btn of plusButtons) {
+                const row = btn.closest('.display-table-row');
+                if (row?.innerText.includes(ticket_price_backup)) {
+                    for (let i = 0; i < ticket_num; i++) btn.click();
+                    log(`主無票 → 改選備援票價：${ticket_price_backup}`);
+                    return true;
+                }
+            }
+        }
+
+        // 任意票價（依策略）
+        if (ticket_price_backup === "") {
+            const arr = Array.from(plusButtons);
+            let btn = null;
+
+            if (ticket_select_mode === 'top') {
+                btn = arr[0]; log("任意價位 → 由上而下");
+            } else if (ticket_select_mode === 'bottom') {
+                btn = arr[arr.length - 1]; log("任意價位 → 由下而上");
+            } else if (ticket_select_mode === 'random') {
+                const idx = Math.floor(Math.random() * arr.length);
+                btn = arr[idx];
+                log(`任意價位 → 隨機選（第 ${idx + 1} 款）`);
+            } else {
+                log("⚠️ ticket_select_mode 設定錯誤！");
+                return false;
+            }
+
+            for (let i = 0; i < ticket_num; i++) btn.click();
+            return true;
+        }
+        return false;
+    }
+
+    // ==== 條款 + 會員 + 驗證碼 + 下一步 ====
+    function handleAgreementAndCaptcha() {
+        document.querySelector('input[type="checkbox"]')?.click();
+        const mem = document.querySelector('input.member-code, input[ng-model*="member_codes"], input[placeholder*="會員"]');
+        if (mem) safeVal(mem, MEMBER_CODE);
+
+        const cap = document.querySelector('input[name="captcha_answer"], input[placeholder*="驗證"]');
+        if (cap) {
+            if (CAPTCHA_MODE === 'fixed' && CAPTCHA_VALUE) {
+                safeVal(cap, CAPTCHA_VALUE);
+                setTimeout(clickNext, 200);
+            } else {
+                cap.focus();
+                cap.addEventListener('input', () => {
+                    if (cap.value.trim().length >= 2) setTimeout(clickNext, 120);
+                });
+            }
+        } else {
+            setTimeout(clickNext, 200);
+        }
+    }
+
+    function clickNext() {
+        const next = [...document.querySelectorAll('button,input')].find(b => (b.innerText || b.value || '').includes('下一步'));
+        if (next) return next.click(), log("➡️ 下一步");
+
+        const auto = [...document.querySelectorAll('button')].find(b => b.innerText.includes('配位'));
+        if (auto) return auto.click(), log("🎯 自動配位");
+
+        log("⚠️ 找不到下一步 / 配位按鈕");
+    }
+
+    // ==== 主流程 ====
+    function main() {
+        try {
+            if (trySelectTickets()) {
+                setTimeout(handleAgreementAndCaptcha, 200);
+            } else {
+                log("❌ 無票 → 重整等待…");
+                setTimeout(() => location.reload(), REFRESH_INTERVAL);
+            }
+        } catch {
+            setTimeout(() => location.reload(), REFRESH_INTERVAL);
+        }
+    }
+
+    // ==== 定時啟動 ====
+    window.addEventListener("load", () => {
+        log("腳本啟動 ✔");
+
+        // 偵測腳本是否未注入
+        setTimeout(() => {
+            if (!document.body) alert("⚠️ 腳本未成功啟動，請重新整理（或檢查擴充功能權限）");
+        }, 1500);
+
+        if (!ENABLE_TIMER) return setTimeout(main, 400);
+
+        log(`⏳ 等待開搶時間：${START_TIME}`);
+        const timer = setInterval(() => {
+            const now = new Date();
+            const cur = now.toTimeString().slice(0, 8);
+            if (cur >= START_TIME) {
+                clearInterval(timer);
+                log(`🚀 開搶 ${cur}`);
+                setTimeout(main, 10);
+            }
+        }, 200);
+    });
+
+})();
+
