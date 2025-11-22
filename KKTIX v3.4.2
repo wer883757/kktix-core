@@ -1,0 +1,291 @@
+// ==UserScript==
+// @name         Kenny KKTIX v3.4.2（自動抓票價 + 強化選票 + 自動停止）
+// @namespace    https://tampermonkey.net/
+// @version      3.4.2
+// @description  自動抓票價、排除身障票、拖曳GUI、記憶設定、排程搶票、自動選票、自動配位、自動下一步、自動關閉 popup、無票自動確認、搶到停止、鈴聲通知
+// @match        https://kktix.com/events/*/registrations/new*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    "use strict";
+
+    let running = false;
+    let autoStop = false;
+    const alarm = new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
+    const $ = id => document.getElementById(id);
+
+    // === Toast ===
+    function toast(msg) {
+        const d = document.createElement("div");
+        d.innerText = msg;
+        d.style.cssText = `
+            position: fixed; top: 14%; right: 20px; z-index: 99999;
+            background: rgba(0,0,0,.85); color: #fff; padding: 10px 16px;
+            border-radius: 8px; font-size: 16px;
+        `;
+        document.body.appendChild(d);
+        setTimeout(() => (d.style.opacity = "0"), 900);
+        setTimeout(() => d.remove(), 1300);
+    }
+
+    // === 自動處理無票 popup ===
+    function autoHandleSoldOut() {
+        const keywords = ["已無票", "已售完", "沒有票", "售完"];
+        const obs = new MutationObserver(muts => {
+            muts.forEach(m => {
+                m.addedNodes.forEach(n => {
+                    if (n.nodeType !== 1) return;
+                    const txt = n.innerText || "";
+                    if (!keywords.some(k => txt.includes(k))) return;
+                    const btn = [...n.querySelectorAll("button,input")].find(b =>
+                        /確定|OK|確認/.test(b.innerText || b.value || "")
+                    );
+                    btn?.click();
+                    toast("⚠ 自動關閉無票提示");
+                });
+            });
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
+    }
+    autoHandleSoldOut();
+
+    // === GUI ===
+    const gui = document.createElement("div");
+    gui.innerHTML = `
+        <div id="kenny-box" style="
+            background:#111;color:#eee;padding:12px;position:fixed;
+            top:20%;right:20px;z-index:9999;width:260px;border-radius:10px;
+            border:1px solid #666;font-size:14px;
+        ">
+            <h3 style="margin-top:0;text-align:center;font-size:18px;cursor:move;">🎫 Kenny KKTIX v3.4.1</h3>
+
+            <div id="kenny-content">
+                <label>主票價（自動抓價）</label>
+                <input id="p1" type="text" placeholder="自動偵測" style="width:100%;margin-bottom:6px">
+
+                <label>備援票價（空=任意）</label>
+                <input id="p2" type="text" placeholder="可填可不填" style="width:100%;margin-bottom:6px">
+
+                <label>張數</label>
+                <select id="num" style="width:100%;margin-bottom:6px">
+                    <option>1</option><option selected>2</option>
+                    <option>3</option><option>4</option><option>5</option>
+                </select>
+
+                <label>模式</label>
+                <select id="mode" style="width:100%;margin-bottom:6px">
+                    <option value="top">由上而下</option>
+                    <option value="bottom">由下而上</option>
+                    <option value="random" selected>隨機</option>
+                </select>
+
+                <label>會員編號</label>
+                <input id="member" type="text" placeholder="可留空" style="width:100%;margin-bottom:6px">
+
+                <label>啟動時間（空=立即）</label>
+                <input id="startTime" type="text" placeholder="HH:MM:SS" style="width:100%;margin-bottom:10px">
+
+                <button id="start" style="width:100%;padding:6px;background:#06f;color:white;font-size:16px;border-radius:6px;margin-bottom:6px;">▶ 啟動</button>
+                <button id="pause" style="width:100%;padding:6px;background:#c00;color:white;font-size:16px;border-radius:6px;">⏸ 暫停</button>
+            </div>
+
+            <button id="minBtn" style="width:100%;margin-top:6px;padding:4px;background:#444;color:#fff;border-radius:6px;">🔽 最小化</button>
+        </div>
+    `;
+    document.body.appendChild(gui);
+
+    // === 記憶設定 ===
+    ["p1", "p2", "num", "mode", "member", "startTime"].forEach(id => {
+        const v = localStorage.getItem("kenny_" + id);
+        if (v) $(id).value = v;
+    });
+
+    // === GUI縮放 ===
+    $("minBtn").onclick = () => {
+        const c = $("kenny-content");
+        const s = c.style.display === "none";
+        c.style.display = s ? "block" : "none";
+        $("minBtn").innerText = s ? "🔽 最小化" : "🔼 展開";
+    };
+
+    // === 拖曳 ===
+    (function drag() {
+        const box = $("kenny-box");
+        let dx = 0, dy = 0, dragging = false;
+        box.addEventListener("mousedown", e => {
+            dragging = true;
+            dx = e.clientX - box.offsetLeft;
+            dy = e.clientY - box.offsetTop;
+        });
+        document.addEventListener("mousemove", e => {
+            if (!dragging) return;
+            box.style.left = e.clientX - dx + "px";
+            box.style.top = e.clientY - dy + "px";
+            box.style.right = "auto";
+        });
+        document.addEventListener("mouseup", () => dragging = false);
+    })();
+
+    // === 自動抓票價（v3.4 修正）
+    function getPriceFromRow(row) {
+        let price =
+            row.querySelector(".ticket-price")?.innerText ||
+            row.querySelector(".price")?.innerText ||
+            [...row.querySelectorAll("span,div")]
+                .map(x => x.innerText)
+                .find(t => /TWD|NT\$|\$/.test(t)) ||
+            "";
+
+        return price.replace(/\s+/g, "").trim();
+    }
+
+    // ======== 選票（排除身心障礙票 + 主票依模式 top/bottom/random） ========
+    function selectTicket() {
+        let plus = [...document.querySelectorAll(".plus")].filter(btn => {
+            const row = btn.closest('.display-table-row')?.innerText || "";
+            return !/身|障|陪同|身心障礙/.test(row);
+        });
+
+        if (!plus.length) return false;
+
+        const p1 = $("p1").value.trim();
+        const p2 = $("p2").value.trim();
+        const num = parseInt($("num").value);
+        const mode = $("mode").value;
+
+        // =====================
+        //   主票（依模式）
+        // =====================
+        if (p1) {
+            let mainList = plus.filter(btn => {
+                const row = btn.closest('.display-table-row')?.innerText || "";
+                return row.includes(p1);
+            });
+
+            if (mainList.length > 0) {
+                // top / bottom / random
+                let btn;
+                if (mode === "top") btn = mainList[0];
+                else if (mode === "bottom") btn = mainList[mainList.length - 1];
+                else btn = mainList[Math.floor(Math.random() * mainList.length)];
+
+                for (let i = 0; i < num; i++) btn.click();
+                return true;
+            }
+        }
+
+        // =====================
+        //   備援票（任意第一個符合）
+        // =====================
+        if (p2) {
+            for (const btn of plus) {
+                const row = btn.closest('.display-table-row')?.innerText || "";
+                if (row.includes(p2)) {
+                    for (let i = 0; i < num; i++) btn.click();
+                    return true;
+                }
+            }
+        }
+
+        // =====================
+        //   沒主票也沒備援 → 任意票依模式
+        // =====================
+        if (!p2) {
+            let btn;
+            if (mode === "top") btn = plus[0];
+            else if (mode === "bottom") btn = plus[plus.length - 1];
+            else btn = plus[Math.floor(Math.random() * plus.length)];
+
+            for (let i = 0; i < num; i++) btn.click();
+            return true;
+        }
+
+        return false;
+    }
+
+
+    // === 自動下一步 ===
+    function clickNext() {
+        document.querySelector('input[type="checkbox"]')?.click();
+
+        // 會員填入
+        const mem = $("member").value.trim();
+        const mf = document.querySelector('input.member-code,input[placeholder*="會員"]');
+        if (mf && mem) {
+            mf.value = mem;
+            mf.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
+        const auto = [...document.querySelectorAll("button")].find(b => b.innerText.includes("配位"));
+        if (auto) return auto.click();
+
+        const next = [...document.querySelectorAll("button,input")]
+            .find(b => (b.innerText || b.value || "").includes("下一步"));
+        next?.click();
+    }
+
+    // === 偵測結帳（強化版） ===
+    function detectCheckoutPage() {
+        if (!running) return;
+
+        const html = document.body.innerText;
+        const keys = [
+            "訂單明細","訂單資訊","聯絡人資料","付款方式",
+            "支付方式","信用卡","取票方式","票券資訊",
+            "寄送資訊","Step 3","Step 4"
+        ];
+        if (keys.some(k => html.includes(k))) {
+            running = false;
+            if (!autoStop) {
+                autoStop = true;
+                alarm.play();
+                toast("🎉 已進入結帳頁 — 停止搶票");
+            }
+        }
+    }
+    setInterval(detectCheckoutPage, 400);
+
+    // === 主流程 ===
+    function main() {
+        if (!running) return;
+
+        if (selectTicket()) {
+            alarm.play();
+            setTimeout(clickNext, 200);
+        } else {
+            setTimeout(() => running && location.reload(), 800);
+        }
+    }
+
+    // === 控制 ===
+    $("start").onclick = () => {
+        ["p1", "p2", "num", "mode", "member", "startTime"].forEach(id =>
+            localStorage.setItem("kenny_" + id, $(id).value.trim())
+        );
+
+        const T = $("startTime").value.trim();
+        if (!T) {
+            running = true;
+            toast("🚀 已啟動搶票");
+            main();
+            return;
+        }
+
+        toast("⏳ 已設定排程");
+        const timer = setInterval(() => {
+            if (new Date().toTimeString().slice(0, 8) >= T) {
+                clearInterval(timer);
+                running = true;
+                toast("🔥 時間到 → 開始搶票！");
+                main();
+            }
+        }, 200);
+    };
+
+    $("pause").onclick = () => {
+        running = false;
+        toast("⏸ 已暫停");
+    };
+})();
