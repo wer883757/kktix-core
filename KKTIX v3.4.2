@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Kenny KKTIX v3.4.2（自動抓票價 + 強化選票 + 自動停止）
+// @name         Kenny KKTIX v3.4.3（自動抓票價 + 強化選票 + 自動停止 + 無票續搶）
 // @namespace    https://tampermonkey.net/
-// @version      3.4.2
-// @description  自動抓票價、排除身障票、拖曳GUI、記憶設定、排程搶票、自動選票、自動配位、自動下一步、自動關閉 popup、無票自動確認、搶到停止、鈴聲通知
+// @version      3.4.3
+// @description  自動抓票價、排除身障票、拖曳GUI、記憶設定、排程搶票、自動選票、自動配位、自動下一步、自動關閉 popup、無票自動確認、搶到停止、鈴聲通知、無票後強制隨機續搶
 // @match        https://kktix.com/events/*/registrations/new*
 // @run-at       document-idle
 // @grant        none
@@ -30,23 +30,40 @@
         setTimeout(() => d.remove(), 1300);
     }
 
-    // === 自動處理無票 popup ===
+    // === 自動處理無票 popup（關閉後強制 random 模式並立即續搶） ===
     function autoHandleSoldOut() {
-        const keywords = ["已無票", "已售完", "沒有票", "售完"];
+        const keywords = [
+            "已無票", "已售完", "沒有票", "售完",
+            "目前沒有可以購買的票券", "糟糕，有人快您一步"
+        ];
+
         const obs = new MutationObserver(muts => {
             muts.forEach(m => {
                 m.addedNodes.forEach(n => {
                     if (n.nodeType !== 1) return;
+
                     const txt = n.innerText || "";
                     if (!keywords.some(k => txt.includes(k))) return;
+
                     const btn = [...n.querySelectorAll("button,input")].find(b =>
                         /確定|OK|確認/.test(b.innerText || b.value || "")
                     );
+
                     btn?.click();
-                    toast("⚠ 自動關閉無票提示");
+                    toast("⚠ 自動關閉無票提示 → 改為隨機模式續搶");
+
+                    // 強制改成 random 模式
+                    const modeEl = $("mode");
+                    if (modeEl) modeEl.value = "random";
+
+                    // 若正在搶 → 立刻續搶
+                    if (running) {
+                        setTimeout(main, 120);
+                    }
                 });
             });
         });
+
         obs.observe(document.body, { childList: true, subtree: true });
     }
     autoHandleSoldOut();
@@ -59,7 +76,7 @@
             top:20%;right:20px;z-index:9999;width:260px;border-radius:10px;
             border:1px solid #666;font-size:14px;
         ">
-            <h3 style="margin-top:0;text-align:center;font-size:18px;cursor:move;">🎫 Kenny KKTIX v3.4.1</h3>
+            <h3 style="margin-top:0;text-align:center;font-size:18px;cursor:move;">🎫 Kenny KKTIX v3.4.3</h3>
 
             <div id="kenny-content">
                 <label>主票價（自動抓價）</label>
@@ -128,7 +145,7 @@
         document.addEventListener("mouseup", () => dragging = false);
     })();
 
-    // === 自動抓票價（v3.4 修正）
+    // === 自動抓票價（v3.4 修正版） ===
     function getPriceFromRow(row) {
         let price =
             row.querySelector(".ticket-price")?.innerText ||
@@ -141,7 +158,7 @@
         return price.replace(/\s+/g, "").trim();
     }
 
-    // ======== 選票（排除身心障礙票 + 主票依模式 top/bottom/random） ========
+    // ======== 選票（排除身障票 + 主票依模式 top/bottom/random） ========
     function selectTicket() {
         let plus = [...document.querySelectorAll(".plus")].filter(btn => {
             const row = btn.closest('.display-table-row')?.innerText || "";
@@ -155,9 +172,7 @@
         const num = parseInt($("num").value);
         const mode = $("mode").value;
 
-        // =====================
-        //   主票（依模式）
-        // =====================
+        // 主票
         if (p1) {
             let mainList = plus.filter(btn => {
                 const row = btn.closest('.display-table-row')?.innerText || "";
@@ -165,7 +180,6 @@
             });
 
             if (mainList.length > 0) {
-                // top / bottom / random
                 let btn;
                 if (mode === "top") btn = mainList[0];
                 else if (mode === "bottom") btn = mainList[mainList.length - 1];
@@ -176,9 +190,7 @@
             }
         }
 
-        // =====================
-        //   備援票（任意第一個符合）
-        // =====================
+        // 備援票
         if (p2) {
             for (const btn of plus) {
                 const row = btn.closest('.display-table-row')?.innerText || "";
@@ -189,9 +201,7 @@
             }
         }
 
-        // =====================
-        //   沒主票也沒備援 → 任意票依模式
-        // =====================
+        // 任意票
         if (!p2) {
             let btn;
             if (mode === "top") btn = plus[0];
@@ -205,12 +215,10 @@
         return false;
     }
 
-
     // === 自動下一步 ===
     function clickNext() {
         document.querySelector('input[type="checkbox"]')?.click();
 
-        // 會員填入
         const mem = $("member").value.trim();
         const mf = document.querySelector('input.member-code,input[placeholder*="會員"]');
         if (mf && mem) {
