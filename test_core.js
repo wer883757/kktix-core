@@ -1,163 +1,287 @@
 (function(){
   console.log("KKTIX core started");
 
-(function () {
-    'use strict';
+  (function () {
+    "use strict";
 
+    /* ==============================
+       基本變數
+    ============================== */
     let running = false;
+    let autoStop = false;
+    const POLL_INTERVAL_MS = 250;
+    const RELOAD_DELAY_MS = 200;
     const alarm = new Audio("https://actions.google.com/sounds/v1/alarms/beep_short.ogg");
     const $ = id => document.getElementById(id);
 
-    // ======== 自動消失提示 ========
+    /* ==============================
+       Toast
+    ============================== */
     function toast(msg) {
-        const div = document.createElement("div");
-        div.innerText = msg;
-        div.style.cssText = `
-            position: fixed; top: 15%; right: 20px; z-index: 99999;
-            background: rgba(0,0,0,0.85); color: #fff; padding: 10px 16px;
-            border-radius: 8px; font-size: 16px; box-shadow: 0 0 8px #000;
-            transition: opacity .4s;
+        const d = document.createElement("div");
+        d.innerText = msg;
+        d.style.cssText = `
+            position: fixed; top: 14%; right: 20px; z-index: 99999;
+            background: rgba(0,0,0,.85); color: #fff; padding: 10px 16px;
+            border-radius: 8px; font-size: 16px;
         `;
-        document.body.appendChild(div);
-        setTimeout(() => (div.style.opacity = "0"), 900);
-        setTimeout(() => div.remove(), 1300);
+        document.body.appendChild(d);
+        setTimeout(() => (d.style.opacity = "0"), 900);
+        setTimeout(() => d.remove(), 1400);
     }
 
-    // ======== GUI 建立 ========
-    const panel = document.createElement("div");
-    panel.innerHTML = `
-        <div style="background:#111;color:#eee;padding:12px;position:fixed;top:20%;right:20px;z-index:9999;width:260px;
-             font-size:14px;border-radius:10px;border:1px solid #666;">
-            <h3 style="margin-top:0;text-align:center;font-size:18px;">🎫 Kenny KKTIX</h3>
+    /* ==============================
+       自動關閉「售完/無票」提示
+    ============================== */
+    function autoHandleSoldOut() {
+        const keywords = [
+            "已無票","已售完","沒有票","售完",
+            "目前沒有可以購買的票券","糟糕，有人快您一步"
+        ];
 
-            <label>主票價</label>
-            <input id="p1" type="text" placeholder="例：TWD$2,200" style="width:100%;margin-bottom:6px">
+        new MutationObserver(muts => {
+            muts.forEach(m => m.addedNodes.forEach(n => {
+                if (n.nodeType !== 1) return;
+                const txt = n.innerText || "";
+                if (!keywords.some(k => txt.includes(k))) return;
 
-            <label>備援票價（空=任意）</label>
-            <input id="p2" type="text" placeholder="例：TWD$1,800" style="width:100%;margin-bottom:6px">
+                const btn = [...n.querySelectorAll("button,input")]
+                    .find(b => /確定|OK|確認/.test(b.innerText || b.value || ""));
+                btn?.click();
 
-            <label>張數</label>
-            <select id="num" style="width:100%;margin-bottom:6px">
-                <option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option>
-            </select>
+                toast("⚠ 自動關閉售完提示 → 改用 random 模式續搶");
+                try { $("mode").value = "random"; } catch(e){}
 
-            <label>模式</label>
-            <select id="mode" style="width:100%;margin-bottom:6px">
-                <option value="top">由上而下</option>
-                <option value="bottom">由下而上</option>
-                <option value="random" selected>隨機</option>
-            </select>
+                if (running) setTimeout(main, 100);
+            }));
+        }).observe(document.body, { childList: true, subtree: true });
+    }
+    autoHandleSoldOut();
 
-            <label>會員編號（可留空）</label>
-            <input id="member" type="text" placeholder="例：BZ583022889" style="width:100%;margin-bottom:6px">
+    /* ==============================
+       GUI
+    ============================== */
+    const gui = document.createElement("div");
+    gui.innerHTML = `
+        <div id="kenny-box" style="background:#111;color:#eee;padding:12px;position:fixed;
+            top:20%;right:20px;z-index:9999;width:280px;border-radius:10px;border:1px solid #666;font-size:14px;">
+            <h3 style="margin-top:0;text-align:center;font-size:18px;cursor:move;">🎫 Kenny KKTIX v3.4.7</h3>
+            <div id="kenny-content">
 
-            <label>啟動時間 (空=立即)</label>
-            <input id="startTime" type="text" placeholder="HH:MM:SS" style="width:100%;margin-bottom:10px">
+                <label>張數</label>
+                <select id="num" style="width:100%;margin-bottom:6px">
+                    <option>1</option><option selected>2</option>
+                    <option>3</option><option>4</option><option>5</option>
+                </select>
 
-            <button id="start" style="width:100%;padding:6px;margin-bottom:6px;background:#06f;color:white;font-size:16px;border-radius:5px;">▶ 啟動</button>
-            <button id="pause" style="width:100%;padding:6px;background:#c00;color:white;font-size:16px;border-radius:5px;">⏸ 暫停</button>
+                <label>模式</label>
+                <select id="mode" style="width:100%;margin-bottom:6px">
+                    <option value="top">由上而下</option>
+                    <option value="bottom">由下而上</option>
+                    <option value="random" selected>隨機</option>
+                </select>
+
+                <label>會員編號</label>
+                <input id="member" type="text" placeholder="可留空" style="width:100%;margin-bottom:6px">
+
+                <label>啟動時間（空=立即）</label>
+                <input id="startTime" type="text" placeholder="HH:MM:SS" style="width:100%;margin-bottom:10px">
+
+                <button id="start" style="width:100%;padding:6px;background:#06f;color:white;font-size:16px;border-radius:6px;margin-bottom:6px;">▶ 啟動</button>
+                <button id="pause" style="width:100%;padding:6px;background:#c00;color:white;font-size:16px;border-radius:6px;">⏸ 暫停</button>
+            </div>
+            <button id="minBtn" style="width:100%;margin-top:6px;padding:4px;background:#444;color:#fff;border-radius:6px;">🔽 最小化</button>
         </div>
     `;
-    document.body.appendChild(panel);
+    document.body.appendChild(gui);
 
-    // ======== 選票 ========
-    function selectTicket() {
-        const plus = document.querySelectorAll(".plus");
-        if (!plus.length) return false;
+    /* ==============================
+       設定記憶
+    ============================== */
+    ["num", "mode", "member", "startTime"].forEach(id => {
+        const v = localStorage.getItem("kenny_" + id);
+        if (v && $(id)) $(id).value = v;
+    });
 
-        const p1 = $("p1").value.trim();
-        const p2 = $("p2").value.trim();
-        const num = parseInt($("num").value);
-        const mode = $("mode").value;
+    /* ==============================
+       GUI 最小化
+    ============================== */
+    $("minBtn").onclick = () => {
+        const c = $("kenny-content");
+        const show = c.style.display === "none";
+        c.style.display = show ? "block" : "none";
+        $("minBtn").innerText = show ? "🔽 最小化" : "🔼 展開";
+    };
 
-        // 主票
-        for (const btn of plus) {
-            if (btn.closest('.display-table-row')?.innerText.includes(p1)) {
-                for (let i = 0; i < num; i++) btn.click();
-                return true;
+    /* ==============================
+       GUI 拖曳
+    ============================== */
+    (function drag() {
+        const box = $("kenny-box");
+        let dx = 0, dy = 0, dragging = false;
+        box.addEventListener("mousedown", e => {
+            dragging = true;
+            dx = e.clientX - box.offsetLeft;
+            dy = e.clientY - box.offsetTop;
+        });
+        document.addEventListener("mousemove", e => {
+            if (!dragging) return;
+            box.style.left = e.clientX - dx + "px";
+            box.style.top = e.clientY - dy + "px";
+            box.style.right = "auto";
+        });
+        document.addEventListener("mouseup", () => dragging = false);
+    })();
+
+    /* ==============================
+       偵測結帳 → 停止搶票
+    ============================== */
+    function detectCheckoutPage() {
+        if (!running) return;
+        const html = document.body.innerText || "";
+        const keys = [
+            "訂單明細","訂單資訊","聯絡人資料","付款方式",
+            "信用卡","寄送資訊","票券資訊","Step 3","Step 4"
+        ];
+        if (keys.some(k => html.includes(k))) {
+            running = false;
+            localStorage.removeItem("kenny_running");
+            if (!autoStop) {
+                autoStop = true;
+                alarm.play();
+                toast("🎉 已進入結帳頁 — 自動停止搶票");
             }
         }
+    }
+    setInterval(detectCheckoutPage, 300);
 
-        // 備援票
-        if (p2) {
-            for (const btn of plus) {
-                if (btn.closest('.display-table-row')?.innerText.includes(p2)) {
-                    for (let i = 0; i < num; i++) btn.click();
-                    return true;
-                }
-            }
-        }
-
-        // 任意票
-        if (!p2) {
-            const arr = Array.from(plus);
-            let btn = arr[0];
-            if (mode === "bottom") btn = arr[arr.length - 1];
-            if (mode === "random") btn = arr[Math.floor(Math.random() * arr.length)];
-            for (let i = 0; i < num; i++) btn.click();
-            return true;
-        }
-        return false;
+    /* ==============================
+       判斷按鈕是否可點
+    ============================== */
+    function isButtonClickable(btn) {
+        if (!btn) return false;
+        if (btn.disabled || btn.classList.contains("disabled")) return false;
+        if (btn.offsetParent === null) return false;
+        try {
+            const cs = window.getComputedStyle(btn);
+            if (cs.pointerEvents === "none") return false;
+            if (parseFloat(cs.opacity) < 0.2) return false;
+        } catch (e) {}
+        return true;
     }
 
-    // ======== 自動下一步 / 配位 ========
-    function clickNextOrAutoSeat() {
-        document.querySelector('input[type="checkbox"]')?.click();
-
-        const mem = $("member").value.trim();
-        const memField = document.querySelector('input.member-code, input[ng-model*="member_codes"], input[placeholder*="會員"]');
-        if (mem && memField) {
-            memField.focus();
-            memField.value = mem;
-            memField.dispatchEvent(new Event("input", { bubbles: true }));
-        }
-
-        const auto = [...document.querySelectorAll('button')].find(b => b.innerText.includes("配位"));
-        if (auto) return auto.click();
-
-        const next = [...document.querySelectorAll('button,input')].find(b => (b.innerText || b.value || "").includes("下一步"));
-        if (next) return next.click();
-    }
-
-    // ======== 主流程 ========
+    /* ==============================
+       主搶票引擎（無限輪詢）
+    ============================== */
     function main() {
         if (!running) return;
 
-        if (selectTicket()) {
-            alarm.play();
-            setTimeout(clickNextOrAutoSeat, 200);
-        } else {
-            setTimeout(() => running && location.reload(), 1000);
+        const rows = document.querySelectorAll(".display-table-row");
+
+        /* 無票面 → reload */
+        if (rows.length === 0) {
+            return setTimeout(() => {
+                if (running) location.reload();
+            }, RELOAD_DELAY_MS);
         }
+
+        /* 過濾真正可點的＋ */
+        let plus = [...document.querySelectorAll(".plus")].filter(btn => {
+            if (!isButtonClickable(btn)) return false;
+            const txt = btn.closest(".display-table-row")?.innerText || "";
+            if (/身|障|殘|陪同/.test(txt)) return false;
+            return true;
+        });
+
+        /* 有票面但無可點 → reload */
+        if (plus.length === 0) {
+            return setTimeout(() => {
+                if (running) location.reload();
+            }, RELOAD_DELAY_MS);
+        }
+
+        /* 模式選擇 */
+        let targetBtn;
+        const mode = $("mode")?.value || "random";
+
+        if (mode === "top") targetBtn = plus[0];
+        else if (mode === "bottom") targetBtn = plus[plus.length - 1];
+        else targetBtn = plus[Math.floor(Math.random() * plus.length)];
+
+        /* click + */
+        try { targetBtn.click(); } catch (e) {}
+
+        /* 選張數 */
+        setTimeout(() => {
+            const count = parseInt($("num")?.value) || 1;
+            const addBtn = document.querySelector(".qty-input .plus");
+            for (let i = 1; i < count; i++) try { addBtn?.click(); } catch(e){}
+        }, 70);
+
+        /* 下一步 */
+        setTimeout(() => {
+            try { document.querySelector('input[type="checkbox"]')?.click(); } catch(e){}
+
+            const m = $("member")?.value?.trim();
+            const mf = document.querySelector('input.member-code,input[placeholder*="會員"]');
+            if (mf && m) mf.value = m;
+
+            const nextBtn = [...document.querySelectorAll("button,input")]
+                .find(b => (b.innerText || b.value || "").includes("下一步"));
+            try { nextBtn?.click(); } catch(e){}
+        }, 140);
+
+        /* 無限輪詢下一輪 */
+        setTimeout(() => {
+            if (running) main();
+        }, POLL_INTERVAL_MS);
     }
 
-    // ======== 控制 ========
+    /* ==============================
+       重新整理後自動續搶
+    ============================== */
+    if (localStorage.getItem("kenny_running") === "1") {
+        running = true;
+        toast("🔄 重新整理 → 自動續搶中");
+        setTimeout(main, 200);
+    }
+
+    /* ==============================
+       START / PAUSE
+    ============================== */
     $("start").onclick = () => {
-        const T = $("startTime").value.trim();
+        ["num", "mode", "member", "startTime"].forEach(id => {
+            localStorage.setItem("kenny_" + id, ($(id)?.value || "").trim());
+        });
+
+        const T = $("startTime")?.value?.trim();
         if (!T) {
             running = true;
-            toast("🚀 立即搶票啟動");
-            main();
-        } else {
-            toast("⏳ 設定排程啟動成功");
-            const timer = setInterval(() => {
-                if (!running && new Date().toTimeString().slice(0, 8) >= T) {
-                    clearInterval(timer);
-                    running = true;
-                    toast("🔥 開始搶票！");
-                    main();
-                }
-            }, 200);
+            localStorage.setItem("kenny_running", "1");
+            toast("🚀 搶票啟動！");
+            return main();
         }
+
+        toast("⏳ 已設定排程…");
+
+        const timer = setInterval(() => {
+            if (new Date().toTimeString().slice(0, 8) >= T) {
+                clearInterval(timer);
+                running = true;
+                localStorage.setItem("kenny_running", "1");
+                toast("🔥 時間到 → 自動開始搶票");
+                main();
+            }
+        }, 200);
     };
 
     $("pause").onclick = () => {
         running = false;
-        toast("⏸ 暫停搶票");
+        localStorage.removeItem("kenny_running");
+        toast("⏸ 已暫停");
     };
+
 })();
-
-
 
 
 })();
