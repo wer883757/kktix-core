@@ -121,15 +121,21 @@
 
     // ======== 主流程 ========
     function main() {
-        if (!running) return;
-
+      if (!running) return;
+  
+      // 尚未開賣 → 重整
+      if (detectNotYetOpen()) {
+          console.log("尚未開賣 → 重整");
+          return setTimeout(() => running && location.reload(), 1000);
+      }
         if (selectTicket()) {
-            alarm.play();
-            setTimeout(clickNextOrAutoSeat, 200);
-        } else {
-            setTimeout(() => running && location.reload(), 1000);
-        }
+          alarm.play();
+          setTimeout(clickNextOrAutoSeat, 200);
+      } else {
+          setTimeout(() => running && location.reload(), 1000);
+      }
     }
+
 
     // ======== 控制 ========
     $("start").onclick = () => {
