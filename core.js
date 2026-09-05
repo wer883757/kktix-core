@@ -3,7 +3,7 @@
 
 (function () {
     'use strict';
-
+  
     let isWaitingForKktixResponse = false;
     const STORAGE_KEY = 'kktix_autostart_state';
     const SETTINGS_KEY = 'kktix_user_pref_settings';
